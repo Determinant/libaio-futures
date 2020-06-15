@@ -26,7 +26,7 @@ pub const IOCB_FLAG_IOPRIO: u32 = 1 << 1;
 // Taken from linux/include/linux/aio_abi.h
 // This is a kernel ABI, so there should be no need to worry about it changing.
 #[repr(C)]
-pub struct IOCbRaw {
+pub struct IOCb {
     pub aio_data: u64,             // ends up in io_event.data
     // NOTE: the order of aio_key and aio_rw_flags could be byte-order depedent
     pub aio_key: u32,
@@ -45,9 +45,9 @@ pub struct IOCbRaw {
     pub aio_resfd: u32,
 }
 
-impl Default for IOCbRaw {
-    fn default() -> Struct_iocb {
-        IOCbRaw {
+impl Default for IOCb {
+    fn default() -> IOCb {
+        IOCb {
             aio_lio_opcode: IOCmd::Noop as u16,
             aio_fildes: (-1_i32) as u32,
             .. unsafe { zeroed() }
@@ -89,7 +89,7 @@ extern "C" {
     pub fn io_submit(ctx: IOContextPtr, nr: c_long, ios: *mut *mut IOCb) -> c_int;
     pub fn io_cancel(ctx: IOContextPtr, iocb: *mut IOCb, evt: *mut IOEvent) -> c_int;
     pub fn io_getevents(ctx_id: IOContextPtr, min_nr: c_long,
-                        nr: c_long, events: *mut Struct_io_event,
+                        nr: c_long, events: *mut IOEvent,
                         timeout: *mut timespec) -> c_int;
 }
 
