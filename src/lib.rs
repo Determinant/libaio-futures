@@ -26,7 +26,7 @@ struct AIO {
     // hold the buffer used by iocb
     data: Option<Box<[u8]>>,
     iocb: AtomicPtr<abi::IOCb>,
-    id: u64
+    id: u64,
 }
 
 impl AIO {
@@ -64,7 +64,7 @@ impl Drop for AIO {
 
 struct AIOFuture<'a> {
     notifier: &'a AIONotifier,
-    aio_id: u64
+    aio_id: u64,
 }
 
 impl<'a> std::future::Future for AIOFuture<'a> {
@@ -112,15 +112,27 @@ pub type AIOResult = Result<(usize, Box<[u8]>), i32>;
 /// Schedules the submission of AIO operations.
 #[async_trait(?Send)]
 pub trait AIOScheduler {
-    async fn read(&mut self, fd: RawFd, offset: u64, length: usize, priority: Option<u16>) -> AIOResult;
-    async fn write(&mut self, fd: RawFd, offset: u64, data: Box<[u8]>, priority: Option<u16>) -> AIOResult;
+    async fn read(
+        &mut self,
+        fd: RawFd,
+        offset: u64,
+        length: usize,
+        priority: Option<u16>,
+    ) -> AIOResult;
+    async fn write(
+        &mut self,
+        fd: RawFd,
+        offset: u64,
+        data: Box<[u8]>,
+        priority: Option<u16>,
+    ) -> AIOResult;
 }
 
 enum AIOState {
     FutureInit(AIO),
     FuturePending(AIO, std::task::Waker),
     FutureDone(AIOResult),
-    FutureDropped
+    FutureDropped,
 }
 
 struct AIONotifierShared {
@@ -185,22 +197,28 @@ impl AIONotifier {
                             let v = e.remove();
                             match v {
                                 AIOState::FutureInit(mut aio) => {
-                                    let v = AIOState::FutureDone(
-                                        if ev.res >= 0 { Ok((ev.res as usize, aio.data.take().unwrap()))
-                                        } else { Err(-ev.res as i32) });
+                                    let v = AIOState::FutureDone(if ev.res >= 0 {
+                                        Ok((ev.res as usize, aio.data.take().unwrap()))
+                                    } else {
+                                        Err(-ev.res as i32)
+                                    });
                                     w.insert(id, v);
-                                },
+                                }
                                 AIOState::FuturePending(mut aio, waker) => {
-                                    let v = AIOState::FutureDone(
-                                        if ev.res >= 0 { Ok((ev.res as usize, aio.data.take().unwrap()))
-                                        } else { Err(-ev.res as i32) });
+                                    let v = AIOState::FutureDone(if ev.res >= 0 {
+                                        Ok((ev.res as usize, aio.data.take().unwrap()))
+                                    } else {
+                                        Err(-ev.res as i32)
+                                    });
                                     w.insert(id, v);
                                     waker.wake();
-                                },
-                                s => { w.insert(id, s); }
+                                }
+                                s => {
+                                    w.insert(id, s);
+                                }
                             }
-                        },
-                        _ => unreachable!()
+                        }
+                        _ => unreachable!(),
                     }
                 }
             }
@@ -227,17 +245,15 @@ impl AIONotifier {
                     AIOState::FutureInit(aio) => {
                         waiting.insert(id, AIOState::FuturePending(aio, waker.clone()));
                         None
-                    },
-                    AIOState::FutureDone(res) => {
-                        Some(res)
-                    },
+                    }
+                    AIOState::FutureDone(res) => Some(res),
                     s => {
                         waiting.insert(id, s);
                         None
                     }
                 }
-            },
-            _ => unreachable!()
+            }
+            _ => unreachable!(),
         }
     }
 }
@@ -263,7 +279,7 @@ impl<'a> AIOBatchScheduler<'a> {
             queued: Vec::new(),
             max_nbatched,
             notifier,
-            last_id: 0
+            last_id: 0,
         }
     }
 
@@ -276,10 +292,11 @@ impl<'a> AIOBatchScheduler<'a> {
     fn schedule(&mut self, aio: AIO) -> AIOFuture {
         let fut = AIOFuture {
             notifier: self.notifier,
-            aio_id: aio.id
+            aio_id: aio.id,
         };
         let iocb = aio.iocb.load(Ordering::Acquire);
-        self.notifier.register_notify(aio.id, AIOState::FutureInit(aio));
+        self.notifier
+            .register_notify(aio.id, AIOState::FutureInit(aio));
         self.queued.push(iocb);
         fut
     }
@@ -287,18 +304,46 @@ impl<'a> AIOBatchScheduler<'a> {
 
 #[async_trait(?Send)]
 impl<'a> AIOScheduler for AIOBatchScheduler<'a> {
-    async fn read(&mut self, fd: RawFd, offset: u64, length: usize, priority: Option<u16>) -> AIOResult {
+    async fn read(
+        &mut self,
+        fd: RawFd,
+        offset: u64,
+        length: usize,
+        priority: Option<u16>,
+    ) -> AIOResult {
         let priority = priority.unwrap_or(0);
         let mut data = Vec::new();
         data.resize(length, 0);
         let data = data.into_boxed_slice();
-        let aio = AIO::new(self.next_id(), fd, offset, data, priority, 0, abi::IOCmd::PWrite);
+        let aio = AIO::new(
+            self.next_id(),
+            fd,
+            offset,
+            data,
+            priority,
+            0,
+            abi::IOCmd::PWrite,
+        );
         self.schedule(aio).await
     }
 
-    async fn write(&mut self, fd: RawFd, offset: u64, data: Box<[u8]>, priority: Option<u16>) -> AIOResult {
+    async fn write(
+        &mut self,
+        fd: RawFd,
+        offset: u64,
+        data: Box<[u8]>,
+        priority: Option<u16>,
+    ) -> AIOResult {
         let priority = priority.unwrap_or(0);
-        let aio = AIO::new(self.next_id(), fd, offset, data, priority, 0, abi::IOCmd::PWrite);
+        let aio = AIO::new(
+            self.next_id(),
+            fd,
+            offset,
+            data,
+            priority,
+            0,
+            abi::IOCmd::PWrite,
+        );
         self.schedule(aio).await
     }
 }
