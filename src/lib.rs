@@ -13,6 +13,7 @@ const LIBAIO_EAGAIN: libc::c_int = -libc::EAGAIN;
 const LIBAIO_ENOMEM: libc::c_int = -libc::ENOMEM;
 const LIBAIO_ENOSYS: libc::c_int = -libc::ENOSYS;
 
+#[derive(Debug)]
 pub enum Error {
     MaxEventsTooLarge,
     LowKernelRes,
@@ -94,7 +95,7 @@ impl Drop for AIO {
 pub type AIOResult = Result<(usize, Box<[u8]>), i32>;
 
 /// Represents a scheduled asynchronous I/O operation.
-struct AIOFuture<'a> {
+pub struct AIOFuture<'a> {
     notifier: &'a AIONotifier,
     aio_id: u64,
 }
@@ -117,22 +118,21 @@ impl<'a> Drop for AIOFuture<'a> {
 }
 
 /// The interface for an AIO scheduler.
-#[async_trait(?Send)]
-pub trait AIOScheduler {
-    async fn read(
+pub trait AIOScheduler<'a> {
+    fn read(
         &mut self,
         fd: RawFd,
         offset: u64,
         length: usize,
         priority: Option<u16>,
-    ) -> AIOResult;
-    async fn write(
+    ) -> AIOFuture<'a>;
+    fn write(
         &mut self,
         fd: RawFd,
         offset: u64,
         data: Box<[u8]>,
         priority: Option<u16>,
-    ) -> AIOResult;
+    ) -> AIOFuture<'a>;
 }
 
 enum AIOState {
@@ -171,13 +171,18 @@ impl AIONotifier {
 
         let s = shared.clone();
         let listener = Some(std::thread::spawn(move || {
+            let mut timespec = timeout.and_then(|nsec: u32| {
+                Some(libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: nsec as i64,
+                })
+            }).unwrap_or(
+                libc::timespec {
+                    tv_sec: 1,
+                    tv_nsec: 0,
+                }
+            );
             while !s.stopped.load(Ordering::Acquire) {
-                let mut timespec = timeout.and_then(|nsec: u32| {
-                    Some(libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: nsec as i64,
-                    })
-                });
                 let mut events = vec![abi::IOEvent::default(); max_nops as usize];
                 let ret = unsafe {
                     abi::io_getevents(
@@ -185,11 +190,7 @@ impl AIONotifier {
                         min_nops as i64,
                         max_nops as i64,
                         events.as_mut_ptr(),
-                        timespec
-                            .as_mut()
-                            .and_then(|ts: &mut libc::timespec| Some(ts as *mut libc::timespec))
-                            .unwrap_or(std::ptr::null_mut()),
-                    )
+                        &mut timespec as *mut libc::timespec)
                 };
                 if ret == 0 {
                     continue;
@@ -248,7 +249,7 @@ impl AIONotifier {
                     AIOState::FutureDone(_) => { e.remove(); },
                 }
             }
-            _ => unreachable!()
+            _ => ()
         }
     }
 
@@ -325,7 +326,7 @@ impl<'a> AIOBatchScheduler<'a> {
         id
     }
 
-    fn schedule(&mut self, aio: AIO) -> AIOFuture {
+    fn schedule(&mut self, aio: AIO) -> AIOFuture<'a> {
         let fut = AIOFuture {
             notifier: self.notifier,
             aio_id: aio.id,
@@ -338,15 +339,15 @@ impl<'a> AIOBatchScheduler<'a> {
     }
 }
 
-#[async_trait(?Send)]
-impl<'a> AIOScheduler for AIOBatchScheduler<'a> {
-    async fn read(
+//#[async_trait(?Send)]
+impl<'a> AIOScheduler<'a> for AIOBatchScheduler<'a> {
+    fn read(
         &mut self,
         fd: RawFd,
         offset: u64,
         length: usize,
         priority: Option<u16>,
-    ) -> AIOResult {
+    ) -> AIOFuture<'a> {
         let priority = priority.unwrap_or(0);
         let mut data = Vec::new();
         data.resize(length, 0);
@@ -360,16 +361,16 @@ impl<'a> AIOScheduler for AIOBatchScheduler<'a> {
             0,
             abi::IOCmd::PWrite,
         );
-        self.schedule(aio).await
+        self.schedule(aio)
     }
 
-    async fn write(
+    fn write(
         &mut self,
         fd: RawFd,
         offset: u64,
         data: Box<[u8]>,
         priority: Option<u16>,
-    ) -> AIOResult {
+    ) -> AIOFuture<'a> {
         let priority = priority.unwrap_or(0);
         let aio = AIO::new(
             self.next_id(),
@@ -380,6 +381,6 @@ impl<'a> AIOScheduler for AIOBatchScheduler<'a> {
             0,
             abi::IOCmd::PWrite,
         );
-        self.schedule(aio).await
+        self.schedule(aio)
     }
 }

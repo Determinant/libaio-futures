@@ -11,6 +11,9 @@ async-trait = "0.1.35"
 libc = "0.2.71"
 parking_lot = "0.10.2"
 
+[dev-dependencies]
+futures = "0.3"
+
 [lib]
 name = "libaiofut"
 path = "src/lib.rs"
