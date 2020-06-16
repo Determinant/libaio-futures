@@ -1,4 +1,4 @@
-//! Linux AIO using Futures/async/await.
+//! Straightforward Linux AIO using Futures/async/await.
 //!
 //! # Example
 //!
