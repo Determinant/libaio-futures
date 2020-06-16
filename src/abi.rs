@@ -91,6 +91,7 @@ extern "C" {
     pub fn io_getevents(ctx_id: IOContextPtr, min_nr: c_long,
                         nr: c_long, events: *mut IOEvent,
                         timeout: *mut timespec) -> c_int;
+    pub fn io_set_eventfd(iocb: *mut IOCb, eventfd: c_int);
 }
 
 #[cfg(test)]

@@ -95,12 +95,12 @@ impl Drop for AIO {
 pub type AIOResult = Result<(usize, Box<[u8]>), i32>;
 
 /// Represents a scheduled asynchronous I/O operation.
-pub struct AIOFuture<'a> {
-    notifier: &'a AIONotifier,
+pub struct AIOFuture {
+    notifier: Arc<AIONotifierShared>,
     aio_id: u64,
 }
 
-impl<'a> std::future::Future for AIOFuture<'a> {
+impl std::future::Future for AIOFuture {
     type Output = AIOResult;
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> std::task::Poll<Self::Output> {
         if let Some(ret) = self.notifier.poll(self.aio_id, cx.waker()) {
@@ -111,28 +111,28 @@ impl<'a> std::future::Future for AIOFuture<'a> {
     }
 }
 
-impl<'a> Drop for AIOFuture<'a> {
+impl Drop for AIOFuture {
     fn drop(&mut self) {
         self.notifier.dropped(self.aio_id)
     }
 }
 
 /// The interface for an AIO scheduler.
-pub trait AIOScheduler<'a> {
+pub trait AIOScheduler {
     fn read(
         &mut self,
         fd: RawFd,
         offset: u64,
         length: usize,
         priority: Option<u16>,
-    ) -> AIOFuture<'a>;
+    ) -> AIOFuture;
     fn write(
         &mut self,
         fd: RawFd,
         offset: u64,
         data: Box<[u8]>,
         priority: Option<u16>,
-    ) -> AIOFuture<'a>;
+    ) -> AIOFuture;
 }
 
 enum AIOState {
@@ -145,6 +145,48 @@ struct AIONotifierShared {
     waiting: Mutex<HashMap<u64, AIOState>>,
     io_ctx: AIOContext,
     stopped: AtomicBool,
+}
+
+impl AIONotifierShared {
+    fn register_notify(&self, id: u64, state: AIOState) {
+        let mut waiting = self.waiting.lock();
+        assert!(waiting.insert(id, state).is_none());
+    }
+
+    fn dropped(&self, id: u64) {
+        let mut waiting = self.waiting.lock();
+        match waiting.entry(id) {
+            hash_map::Entry::Occupied(mut e) => match e.get_mut() {
+                AIOState::FutureInit(_, dropped) => *dropped = true,
+                AIOState::FuturePending(_, _, dropped) => *dropped = true,
+                AIOState::FutureDone(_) => {
+                    e.remove();
+                }
+            },
+            _ => (),
+        }
+    }
+
+    fn poll(&self, id: u64, waker: &std::task::Waker) -> Option<AIOResult> {
+        let mut waiting = self.waiting.lock();
+        match waiting.entry(id) {
+            hash_map::Entry::Occupied(e) => {
+                let v = e.remove();
+                match v {
+                    AIOState::FutureInit(aio, _) => {
+                        waiting.insert(id, AIOState::FuturePending(aio, waker.clone(), false));
+                        None
+                    }
+                    AIOState::FutureDone(res) => Some(res),
+                    s => {
+                        waiting.insert(id, s);
+                        None
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// Listens for finished AIO operations and wake up the futures.
@@ -238,46 +280,6 @@ impl AIONotifier {
         }));
         Ok(AIONotifier { shared, listener })
     }
-
-    fn register_notify(&self, id: u64, state: AIOState) {
-        let mut waiting = self.shared.waiting.lock();
-        assert!(waiting.insert(id, state).is_none());
-    }
-
-    fn dropped(&self, id: u64) {
-        let mut waiting = self.shared.waiting.lock();
-        match waiting.entry(id) {
-            hash_map::Entry::Occupied(mut e) => match e.get_mut() {
-                AIOState::FutureInit(_, dropped) => *dropped = true,
-                AIOState::FuturePending(_, _, dropped) => *dropped = true,
-                AIOState::FutureDone(_) => {
-                    e.remove();
-                }
-            },
-            _ => (),
-        }
-    }
-
-    fn poll(&self, id: u64, waker: &std::task::Waker) -> Option<AIOResult> {
-        let mut waiting = self.shared.waiting.lock();
-        match waiting.entry(id) {
-            hash_map::Entry::Occupied(e) => {
-                let v = e.remove();
-                match v {
-                    AIOState::FutureInit(aio, _) => {
-                        waiting.insert(id, AIOState::FuturePending(aio, waker.clone(), false));
-                        None
-                    }
-                    AIOState::FutureDone(res) => Some(res),
-                    s => {
-                        waiting.insert(id, s);
-                        None
-                    }
-                }
-            }
-            _ => unreachable!(),
-        }
-    }
 }
 
 impl Drop for AIONotifier {
@@ -333,13 +335,13 @@ impl<'a> AIOBatchScheduler<'a> {
         id
     }
 
-    fn schedule(&mut self, aio: AIO) -> AIOFuture<'a> {
+    fn schedule(&mut self, aio: AIO) -> AIOFuture {
         let fut = AIOFuture {
-            notifier: self.notifier,
+            notifier: self.notifier.shared.clone(),
             aio_id: aio.id,
         };
         let iocb = aio.iocb.load(Ordering::Acquire);
-        self.notifier
+        self.notifier.shared
             .register_notify(aio.id, AIOState::FutureInit(aio, false));
         self.queued.push(iocb);
         fut
@@ -347,14 +349,14 @@ impl<'a> AIOBatchScheduler<'a> {
 }
 
 //#[async_trait(?Send)]
-impl<'a> AIOScheduler<'a> for AIOBatchScheduler<'a> {
+impl<'a> AIOScheduler for AIOBatchScheduler<'a> {
     fn read(
         &mut self,
         fd: RawFd,
         offset: u64,
         length: usize,
         priority: Option<u16>,
-    ) -> AIOFuture<'a> {
+    ) -> AIOFuture {
         let priority = priority.unwrap_or(0);
         let mut data = Vec::new();
         data.resize(length, 0);
@@ -377,7 +379,7 @@ impl<'a> AIOScheduler<'a> for AIOBatchScheduler<'a> {
         offset: u64,
         data: Box<[u8]>,
         priority: Option<u16>,
-    ) -> AIOFuture<'a> {
+    ) -> AIOFuture {
         let priority = priority.unwrap_or(0);
         let aio = AIO::new(
             self.next_id(),
