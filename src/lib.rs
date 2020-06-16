@@ -260,7 +260,9 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
                 loop {
                     let nacc = scheduler_out.submit(&n);
                     println!("nacc = {}", nacc);
-                    if nacc == 0 { break }
+                    if nacc == 0 {
+                        break;
+                    }
                 }
                 let mut events = vec![abi::IOEvent::default(); max_nops as usize];
                 let ret = unsafe {
@@ -281,7 +283,11 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
                 }
             }
         }));
-        Ok(AIOManager { notifier, listener, scheduler_in })
+        Ok(AIOManager {
+            notifier,
+            listener,
+            scheduler_in,
+        })
     }
 
     pub fn read(
@@ -343,19 +349,17 @@ pub struct AIOBatchSchedulerIn {
 pub struct AIOBatchSchedulerOut {
     queue_out: crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>>,
     max_nbatched: usize,
-    leftover: Vec<AtomicPtr<abi::IOCb>>
+    leftover: Vec<AtomicPtr<abi::IOCb>>,
 }
 
 impl AIOSchedulerIn for AIOBatchSchedulerIn {
-
     fn schedule(&self, aio: AIO, notifier: &Arc<AIONotifier>) -> AIOFuture {
         let fut = AIOFuture {
             notifier: notifier.clone(),
             aio_id: aio.id,
         };
         let iocb = aio.iocb.load(Ordering::Acquire);
-        notifier
-            .register_notify(aio.id, AIOState::FutureInit(aio, false));
+        notifier.register_notify(aio.id, AIOState::FutureInit(aio, false));
         self.queue_in.send(AtomicPtr::new(iocb)).unwrap();
         fut
     }
@@ -370,16 +374,24 @@ impl AIOSchedulerIn for AIOBatchSchedulerIn {
 impl AIOSchedulerOut for AIOBatchSchedulerOut {
     fn submit(&mut self, notifier: &AIONotifier) -> usize {
         let mut quota = self.max_nbatched;
-        let mut pending = self.leftover.iter().map(|p| p.load(Ordering::Acquire)).collect::<Vec<_>>();
+        let mut pending = self
+            .leftover
+            .iter()
+            .map(|p| p.load(Ordering::Acquire))
+            .collect::<Vec<_>>();
         if pending.len() < quota {
             quota -= pending.len();
             while let Ok(iocb) = self.queue_out.try_recv() {
                 pending.push(iocb.load(Ordering::Acquire));
                 quota -= 1;
-                if quota == 0 { break }
+                if quota == 0 {
+                    break;
+                }
             }
         }
-        if pending.len() == 0 { return 0 }
+        if pending.len() == 0 {
+            return 0;
+        }
         let ret = unsafe {
             abi::io_submit(
                 *notifier.io_ctx,
@@ -388,26 +400,31 @@ impl AIOSchedulerOut for AIOBatchSchedulerOut {
             )
         };
         if (ret < 0 && ret == LIBAIO_EAGAIN) || ret == 0 {
-            return 0
+            return 0;
         }
         assert!(ret > 0);
         let nacc = ret as usize;
-        self.leftover = (&pending[nacc..]).iter().map(|p| AtomicPtr::new(*p)).collect::<Vec<_>>();
+        self.leftover = (&pending[nacc..])
+            .iter()
+            .map(|p| AtomicPtr::new(*p))
+            .collect::<Vec<_>>();
         nacc
     }
 }
 
-pub fn get_batch_scheduler(max_nbatched: Option<usize>) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
-        let max_nbatched = max_nbatched.unwrap_or(1024);
-        let (queue_in, queue_out) = crossbeam_channel::unbounded();
-        let bin = AIOBatchSchedulerIn {
-            queue_in,
-            last_id: 0,
-        };
-        let bout = AIOBatchSchedulerOut {
-            queue_out,
-            max_nbatched,
-            leftover: Vec::new()
-        };
-        (bin, bout)
+pub fn get_batch_scheduler(
+    max_nbatched: Option<usize>,
+) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
+    let max_nbatched = max_nbatched.unwrap_or(1024);
+    let (queue_in, queue_out) = crossbeam_channel::unbounded();
+    let bin = AIOBatchSchedulerIn {
+        queue_in,
+        last_id: 0,
+    };
+    let bout = AIOBatchSchedulerOut {
+        queue_out,
+        max_nbatched,
+        leftover: Vec::new(),
+    };
+    (bin, bout)
 }

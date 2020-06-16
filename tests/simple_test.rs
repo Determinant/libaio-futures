@@ -1,12 +1,13 @@
+use futures::executor::LocalPool;
+use futures::future::FutureExt;
+use futures::task::{LocalSpawn, LocalSpawnExt};
 use libaiofut::AIOManager;
 use std::os::unix::io::AsRawFd;
-use futures::executor::LocalPool;
-use futures::task::{LocalSpawn, LocalSpawnExt};
-use futures::future::FutureExt;
 
 #[test]
 fn simple1() {
-    let mut aiomgr = AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None, None).unwrap();
+    let mut aiomgr =
+        AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -33,7 +34,8 @@ fn simple1() {
 
 #[test]
 fn simple2() {
-    let mut aiomgr = AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None, None).unwrap();
+    let mut aiomgr =
+        AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -46,11 +48,12 @@ fn simple2() {
         .into_iter()
         .map(|i| {
             let off = i * 128;
-            let s = char::from((97 + i % 26) as u8).to_string().repeat((i + 1) as usize);
+            let s = char::from((97 + i % 26) as u8)
+                .to_string()
+                .repeat((i + 1) as usize);
             aiomgr.write(fd, off as u64, s.as_bytes().into(), None)
         })
         .collect::<Vec<_>>();
-    // submit all batches
     let mut pool = LocalPool::new();
     let spawner = pool.spawner();
     for w in ws.into_iter() {
