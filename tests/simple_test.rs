@@ -1,6 +1,6 @@
 use futures::executor::LocalPool;
 use futures::future::FutureExt;
-use futures::task::{LocalSpawn, LocalSpawnExt};
+use futures::task::LocalSpawnExt;
 use libaiofut::AIOManager;
 use std::os::unix::io::AsRawFd;
 

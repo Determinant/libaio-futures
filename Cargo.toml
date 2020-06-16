@@ -7,7 +7,6 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-trait = "0.1.35"
 libc = "0.2.71"
 parking_lot = "0.10.2"
 crossbeam-channel = "0.4.2"

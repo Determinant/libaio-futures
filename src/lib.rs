@@ -1,11 +1,10 @@
 mod abi;
-use async_trait::async_trait;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use std::collections::{hash_map, HashMap};
 use std::os::unix::io::RawFd;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicBool, AtomicPtr, Ordering},
+    atomic::{AtomicPtr, Ordering},
     Arc,
 };
 
