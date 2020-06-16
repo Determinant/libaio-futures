@@ -366,7 +366,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
             data,
             priority,
             0,
-            abi::IOCmd::PWrite,
+            abi::IOCmd::PRead,
         );
         self.scheduler_in.schedule(aio, &self.notifier)
     }
