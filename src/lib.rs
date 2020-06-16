@@ -1,3 +1,39 @@
+//! Linux AIO using Futures/async/await.
+//!
+//! # Example
+//!
+//! Use libaiofut to schedule writes to a file:
+//!
+//! ```rust
+//! use futures::{executor::LocalPool, future::FutureExt, task::LocalSpawnExt};
+//! use libaiofut::{AIOManager, new_batch_scheduler};
+//! use std::os::unix::io::AsRawFd;
+//! let mut aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
+//! let file = std::fs::OpenOptions::new()
+//!     .read(true)
+//!     .write(true)
+//!     .create(true)
+//!     .truncate(true)
+//!     .open("test")
+//!     .unwrap();
+//! let fd = file.as_raw_fd();
+//! // keep all returned futures in a vector
+//! let ws = vec![(0, "hello"), (5, "world"), (2, "xxxx")]
+//!     .into_iter()
+//!     .map(|(off, s)| aiomgr.write(fd, off, s.as_bytes().into(), None))
+//!     .collect::<Vec<_>>();
+//! // here we use futures::executor::LocalPool to poll all futures
+//! let mut pool = LocalPool::new();
+//! let spawner = pool.spawner();
+//! for w in ws.into_iter() {
+//!     let h = spawner.spawn_local_with_handle(w).unwrap().map(|r| {
+//!         println!("wrote {} bytes", r.unwrap().0);
+//!     });
+//!     spawner.spawn_local(h).unwrap();
+//! }
+//! pool.run();
+//! ```
+
 mod abi;
 use parking_lot::Mutex;
 use std::collections::{hash_map, HashMap};
@@ -90,10 +126,11 @@ impl Drop for AIO {
 }
 
 /// The result of an AIO operation: the number of bytes written on success,
-/// and the errno on failure.
+/// or the errno on failure.
 pub type AIOResult = Result<(usize, Box<[u8]>), i32>;
 
-/// Represents a scheduled asynchronous I/O operation.
+/// Represents a scheduled (future) asynchronous I/O operation, which gets executed (resolved)
+/// automatically.
 pub struct AIOFuture {
     notifier: Arc<AIONotifier>,
     aio_id: u64,
@@ -116,14 +153,13 @@ impl Drop for AIOFuture {
     }
 }
 
-/// The interface for an AIO scheduler.
 pub trait AIOSchedulerIn {
     fn schedule(&self, aio: AIO, notifier: &Arc<AIONotifier>) -> AIOFuture;
     fn next_id(&mut self) -> u64;
 }
 
 pub trait AIOSchedulerOut {
-    fn queue_out(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>>;
+    fn get_receiver(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>>;
     fn is_empty(&self) -> bool;
     fn submit(&mut self, notifier: &AIONotifier) -> usize;
 }
@@ -134,10 +170,10 @@ enum AIOState {
     FutureDone(AIOResult),
 }
 
+/// The state machine for finished AIO operations and wakes up the futures.
 pub struct AIONotifier {
     waiting: Mutex<HashMap<u64, AIOState>>,
     io_ctx: AIOContext,
-    //stopped: AtomicBool,
 }
 
 impl AIONotifier {
@@ -219,7 +255,7 @@ impl AIONotifier {
     }
 }
 
-/// Listens for finished AIO operations and wake up the futures.
+/// Manager all AIOs.
 pub struct AIOManager<S: AIOSchedulerIn> {
     notifier: Arc<AIONotifier>,
     scheduler_in: S,
@@ -263,7 +299,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
                 if ongoing == 0 && scheduler_out.is_empty() {
                     let mut sel = crossbeam_channel::Select::new();
                     sel.recv(&exit_r);
-                    sel.recv(&scheduler_out.queue_out());
+                    sel.recv(&scheduler_out.get_receiver());
                     if sel.ready() == 0 {
                         exit_r.recv().unwrap();
                         break;
@@ -394,7 +430,7 @@ impl AIOSchedulerIn for AIOBatchSchedulerIn {
 }
 
 impl AIOSchedulerOut for AIOBatchSchedulerOut {
-    fn queue_out(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>> {
+    fn get_receiver(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>> {
         &self.queue_out
     }
     fn is_empty(&self) -> bool {
@@ -439,7 +475,8 @@ impl AIOSchedulerOut for AIOBatchSchedulerOut {
     }
 }
 
-pub fn get_batch_scheduler(
+/// Create the scheduler that submits AIOs in batches.
+pub fn new_batch_scheduler(
     max_nbatched: Option<usize>,
 ) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
     let max_nbatched = max_nbatched.unwrap_or(128);

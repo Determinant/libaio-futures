@@ -1,12 +1,12 @@
 use futures::executor::LocalPool;
 use futures::future::FutureExt;
 use futures::task::LocalSpawnExt;
-use libaiofut::AIOManager;
+use libaiofut::{AIOManager, new_batch_scheduler};
 use std::os::unix::io::AsRawFd;
 
 #[test]
 fn simple1() {
-    let mut aiomgr = AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None).unwrap();
+    let mut aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -15,8 +15,7 @@ fn simple1() {
         .open("test")
         .unwrap();
     let fd = file.as_raw_fd();
-    let ws = vec![(0, "hello"), (5, "world"), (2, "xxxx")];
-    let ws = ws
+    let ws = vec![(0, "hello"), (5, "world"), (2, "xxxx")]
         .into_iter()
         .map(|(off, s)| aiomgr.write(fd, off, s.as_bytes().into(), None))
         .collect::<Vec<_>>();
@@ -33,7 +32,7 @@ fn simple1() {
 
 #[test]
 fn simple2() {
-    let mut aiomgr = AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None).unwrap();
+    let mut aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
