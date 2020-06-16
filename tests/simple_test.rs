@@ -6,8 +6,7 @@ use std::os::unix::io::AsRawFd;
 
 #[test]
 fn simple1() {
-    let mut aiomgr =
-        AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None, None).unwrap();
+    let mut aiomgr = AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -34,8 +33,7 @@ fn simple1() {
 
 #[test]
 fn simple2() {
-    let mut aiomgr =
-        AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None, None).unwrap();
+    let mut aiomgr = AIOManager::new(libaiofut::get_batch_scheduler(None), 10, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -44,7 +42,7 @@ fn simple2() {
         .open("test2")
         .unwrap();
     let fd = file.as_raw_fd();
-    let ws = (0..1024)
+    let ws = (0..4000)
         .into_iter()
         .map(|i| {
             let off = i * 128;

@@ -1,6 +1,6 @@
 mod abi;
 use async_trait::async_trait;
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use std::collections::{hash_map, HashMap};
 use std::os::unix::io::RawFd;
 use std::pin::Pin;
@@ -124,6 +124,8 @@ pub trait AIOSchedulerIn {
 }
 
 pub trait AIOSchedulerOut {
+    fn queue_out(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>>;
+    fn is_empty(&self) -> bool;
     fn submit(&mut self, notifier: &AIONotifier) -> usize;
 }
 
@@ -136,7 +138,7 @@ enum AIOState {
 pub struct AIONotifier {
     waiting: Mutex<HashMap<u64, AIOState>>,
     io_ctx: AIOContext,
-    stopped: AtomicBool,
+    //stopped: AtomicBool,
 }
 
 impl AIONotifier {
@@ -223,24 +225,24 @@ pub struct AIOManager<S: AIOSchedulerIn> {
     notifier: Arc<AIONotifier>,
     scheduler_in: S,
     listener: Option<std::thread::JoinHandle<()>>,
+    exit_s: crossbeam_channel::Sender<()>,
 }
 
 impl<S: AIOSchedulerIn> AIOManager<S> {
     pub fn new<T: AIOSchedulerOut + Send + 'static>(
         scheduler: (S, T),
         maxevents: usize,
-        min_nops: Option<u16>,
         max_nops: Option<u16>,
         timeout: Option<u32>,
     ) -> Result<Self, Error> {
         let (scheduler_in, mut scheduler_out) = scheduler;
-        let min_nops = min_nops.unwrap_or(128);
         let max_nops = max_nops.unwrap_or(4096);
+        let (exit_s, exit_r) = crossbeam_channel::bounded(0);
 
         let notifier = Arc::new(AIONotifier {
             io_ctx: AIOContext::new(maxevents)?,
             waiting: Mutex::new(HashMap::new()),
-            stopped: AtomicBool::new(false),
+            //stopped: AtomicBool::new(false),
         });
 
         let n = notifier.clone();
@@ -253,31 +255,51 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
                     })
                 })
                 .unwrap_or(libc::timespec {
-                    tv_sec: 1,
+                    tv_sec: 0,
                     tv_nsec: 0,
                 });
-            while !n.stopped.load(Ordering::Acquire) {
+            let mut ongoing = 0;
+            loop {
+                // try to quiesce
+                if ongoing == 0 && scheduler_out.is_empty() {
+                    let mut sel = crossbeam_channel::Select::new();
+                    sel.recv(&exit_r);
+                    sel.recv(&scheduler_out.queue_out());
+                    if sel.ready() == 0 {
+                        exit_r.recv().unwrap();
+                        break;
+                    }
+                }
+                // submit as many aios as possible
                 loop {
                     let nacc = scheduler_out.submit(&n);
-                    println!("nacc = {}", nacc);
+                    ongoing += nacc;
                     if nacc == 0 {
                         break;
                     }
                 }
+                // no need to wait if there is no progress
+                if ongoing == 0 {
+                    continue;
+                }
+                // then block on any finishing aios
                 let mut events = vec![abi::IOEvent::default(); max_nops as usize];
                 let ret = unsafe {
                     abi::io_getevents(
                         *n.io_ctx,
-                        min_nops as i64,
+                        1,
                         max_nops as i64,
                         events.as_mut_ptr(),
                         &mut timespec as *mut libc::timespec,
                     )
                 };
+                // TODO: AIO fatal error handling
+                // avoid empty slice
                 if ret == 0 {
                     continue;
                 }
                 assert!(ret > 0);
+                ongoing -= ret as usize;
                 for ev in events[..ret as usize].iter() {
                     n.finish(ev.data as u64, ev.res);
                 }
@@ -287,6 +309,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
             notifier,
             listener,
             scheduler_in,
+            exit_s,
         })
     }
 
@@ -336,7 +359,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
 
 impl<S: AIOSchedulerIn> Drop for AIOManager<S> {
     fn drop(&mut self) {
-        self.notifier.stopped.store(true, Ordering::Release);
+        self.exit_s.send(()).unwrap();
         self.listener.take().unwrap().join().unwrap();
     }
 }
@@ -372,6 +395,12 @@ impl AIOSchedulerIn for AIOBatchSchedulerIn {
 }
 
 impl AIOSchedulerOut for AIOBatchSchedulerOut {
+    fn queue_out(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>> {
+        &self.queue_out
+    }
+    fn is_empty(&self) -> bool {
+        self.leftover.len() == 0
+    }
     fn submit(&mut self, notifier: &AIONotifier) -> usize {
         let mut quota = self.max_nbatched;
         let mut pending = self
@@ -392,17 +421,16 @@ impl AIOSchedulerOut for AIOBatchSchedulerOut {
         if pending.len() == 0 {
             return 0;
         }
-        let ret = unsafe {
+        let mut ret = unsafe {
             abi::io_submit(
                 *notifier.io_ctx,
                 pending.len() as i64,
                 (&mut pending).as_mut_ptr(),
             )
         };
-        if (ret < 0 && ret == LIBAIO_EAGAIN) || ret == 0 {
-            return 0;
+        if ret < 0 && ret == LIBAIO_EAGAIN {
+            ret = 0
         }
-        assert!(ret > 0);
         let nacc = ret as usize;
         self.leftover = (&pending[nacc..])
             .iter()
@@ -415,7 +443,7 @@ impl AIOSchedulerOut for AIOBatchSchedulerOut {
 pub fn get_batch_scheduler(
     max_nbatched: Option<usize>,
 ) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
-    let max_nbatched = max_nbatched.unwrap_or(1024);
+    let max_nbatched = max_nbatched.unwrap_or(128);
     let (queue_in, queue_out) = crossbeam_channel::unbounded();
     let bin = AIOBatchSchedulerIn {
         queue_in,
