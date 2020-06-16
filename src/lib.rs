@@ -171,17 +171,17 @@ impl AIONotifier {
 
         let s = shared.clone();
         let listener = Some(std::thread::spawn(move || {
-            let mut timespec = timeout.and_then(|nsec: u32| {
-                Some(libc::timespec {
-                    tv_sec: 0,
-                    tv_nsec: nsec as i64,
+            let mut timespec = timeout
+                .and_then(|nsec: u32| {
+                    Some(libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: nsec as i64,
+                    })
                 })
-            }).unwrap_or(
-                libc::timespec {
+                .unwrap_or(libc::timespec {
                     tv_sec: 1,
                     tv_nsec: 0,
-                }
-            );
+                });
             while !s.stopped.load(Ordering::Acquire) {
                 let mut events = vec![abi::IOEvent::default(); max_nops as usize];
                 let ret = unsafe {
@@ -190,7 +190,8 @@ impl AIONotifier {
                         min_nops as i64,
                         max_nops as i64,
                         events.as_mut_ptr(),
-                        &mut timespec as *mut libc::timespec)
+                        &mut timespec as *mut libc::timespec,
+                    )
                 };
                 if ret == 0 {
                     continue;
@@ -200,32 +201,36 @@ impl AIONotifier {
                 for ev in events[..ret as usize].iter() {
                     let id = ev.data as u64;
                     match w.entry(id) {
-                        hash_map::Entry::Occupied(e) => {
-                            match e.remove() {
-                                AIOState::FutureInit(mut aio, dropped) => {
-                                    if !dropped {
-                                        w.insert(id, AIOState::FutureDone(if ev.res >= 0 {
+                        hash_map::Entry::Occupied(e) => match e.remove() {
+                            AIOState::FutureInit(mut aio, dropped) => {
+                                if !dropped {
+                                    w.insert(
+                                        id,
+                                        AIOState::FutureDone(if ev.res >= 0 {
                                             Ok((ev.res as usize, aio.data.take().unwrap()))
                                         } else {
                                             Err(-ev.res as i32)
-                                        }));
-                                    }
-                                }
-                                AIOState::FuturePending(mut aio, waker, dropped) => {
-                                    if !dropped {
-                                        w.insert(id, AIOState::FutureDone(if ev.res >= 0 {
-                                            Ok((ev.res as usize, aio.data.take().unwrap()))
-                                        } else {
-                                            Err(-ev.res as i32)
-                                        }));
-                                        waker.wake();
-                                    }
-                                }
-                                s => {
-                                    w.insert(id, s);
+                                        }),
+                                    );
                                 }
                             }
-                        }
+                            AIOState::FuturePending(mut aio, waker, dropped) => {
+                                if !dropped {
+                                    w.insert(
+                                        id,
+                                        AIOState::FutureDone(if ev.res >= 0 {
+                                            Ok((ev.res as usize, aio.data.take().unwrap()))
+                                        } else {
+                                            Err(-ev.res as i32)
+                                        }),
+                                    );
+                                    waker.wake();
+                                }
+                            }
+                            s => {
+                                w.insert(id, s);
+                            }
+                        },
                         _ => unreachable!(),
                     }
                 }
@@ -242,14 +247,14 @@ impl AIONotifier {
     fn dropped(&self, id: u64) {
         let mut waiting = self.shared.waiting.lock();
         match waiting.entry(id) {
-            hash_map::Entry::Occupied(mut e) => {
-                match e.get_mut() {
-                    AIOState::FutureInit(_, dropped) => *dropped = true,
-                    AIOState::FuturePending(_, _, dropped) => *dropped = true,
-                    AIOState::FutureDone(_) => { e.remove(); },
+            hash_map::Entry::Occupied(mut e) => match e.get_mut() {
+                AIOState::FutureInit(_, dropped) => *dropped = true,
+                AIOState::FuturePending(_, _, dropped) => *dropped = true,
+                AIOState::FutureDone(_) => {
+                    e.remove();
                 }
-            }
-            _ => ()
+            },
+            _ => (),
         }
     }
 
@@ -302,17 +307,19 @@ impl<'a> AIOBatchScheduler<'a> {
 
     pub fn submit(&mut self) -> bool {
         if self.queued.is_empty() {
-            return false
+            return false;
         }
         let pending = &mut self.queued;
         let nmax = std::cmp::min(self.max_nbatched as usize, pending.len());
         let ret = unsafe {
-            abi::io_submit(*self.notifier.shared.io_ctx,
-                              pending.len() as i64,
-                              (&mut pending[..nmax]).as_mut_ptr())
+            abi::io_submit(
+                *self.notifier.shared.io_ctx,
+                pending.len() as i64,
+                (&mut pending[..nmax]).as_mut_ptr(),
+            )
         };
         if (ret < 0 && ret == LIBAIO_EAGAIN) || ret == 0 {
-            return false
+            return false;
         }
         assert!(ret > 0);
         let nacc = ret as usize;
