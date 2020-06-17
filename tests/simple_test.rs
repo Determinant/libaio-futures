@@ -6,7 +6,7 @@ use std::os::unix::io::AsRawFd;
 
 #[test]
 fn simple1() {
-    let mut aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
+    let aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -32,7 +32,7 @@ fn simple1() {
 
 #[test]
 fn simple2() {
-    let mut aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
+    let aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

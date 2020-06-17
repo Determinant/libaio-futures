@@ -155,7 +155,7 @@ impl Drop for AIOFuture {
 
 pub trait AIOSchedulerIn {
     fn schedule(&self, aio: AIO, notifier: &Arc<AIONotifier>) -> AIOFuture;
-    fn next_id(&mut self) -> u64;
+    fn next_id(&self) -> u64;
 }
 
 pub trait AIOSchedulerOut {
@@ -349,7 +349,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
     }
 
     pub fn read(
-        &mut self,
+        &self,
         fd: RawFd,
         offset: u64,
         length: usize,
@@ -372,7 +372,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
     }
 
     pub fn write(
-        &mut self,
+        &self,
         fd: RawFd,
         offset: u64,
         data: Box<[u8]>,
@@ -401,7 +401,7 @@ impl<S: AIOSchedulerIn> Drop for AIOManager<S> {
 
 pub struct AIOBatchSchedulerIn {
     queue_in: crossbeam_channel::Sender<AtomicPtr<abi::IOCb>>,
-    last_id: u64,
+    last_id: std::cell::Cell<u64>,
 }
 
 pub struct AIOBatchSchedulerOut {
@@ -422,9 +422,9 @@ impl AIOSchedulerIn for AIOBatchSchedulerIn {
         fut
     }
 
-    fn next_id(&mut self) -> u64 {
-        let id = self.last_id;
-        self.last_id = id.wrapping_add(1);
+    fn next_id(&self) -> u64 {
+        let id = self.last_id.get();
+        self.last_id.set(id.wrapping_add(1));
         id
     }
 }
@@ -483,7 +483,7 @@ pub fn new_batch_scheduler(
     let (queue_in, queue_out) = crossbeam_channel::unbounded();
     let bin = AIOBatchSchedulerIn {
         queue_in,
-        last_id: 0,
+        last_id: std::cell::Cell::new(0),
     };
     let bout = AIOBatchSchedulerOut {
         queue_out,
