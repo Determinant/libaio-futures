@@ -1,12 +1,12 @@
 use futures::executor::LocalPool;
 use futures::future::FutureExt;
 use futures::task::LocalSpawnExt;
-use libaiofut::{AIOManager, new_batch_scheduler};
+use libaiofut::AIOBuilder;
 use std::os::unix::io::AsRawFd;
 
 #[test]
 fn simple1() {
-    let aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
+    let aiomgr = AIOBuilder::default().build().unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -32,7 +32,7 @@ fn simple1() {
 
 #[test]
 fn simple2() {
-    let aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
+    let aiomgr = AIOBuilder::default().build().unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

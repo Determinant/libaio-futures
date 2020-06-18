@@ -6,9 +6,9 @@
 //!
 //! ```rust
 //! use futures::{executor::LocalPool, future::FutureExt, task::LocalSpawnExt};
-//! use libaiofut::{AIOManager, new_batch_scheduler};
+//! use libaiofut::AIOBuilder;
 //! use std::os::unix::io::AsRawFd;
-//! let mut aiomgr = AIOManager::new(new_batch_scheduler(None), 10, None, None).unwrap();
+//! let mut aiomgr = AIOBuilder::default().build().unwrap();
 //! let file = std::fs::OpenOptions::new()
 //!     .read(true)
 //!     .write(true)
@@ -69,7 +69,7 @@ impl std::ops::Deref for AIOContext {
 }
 
 impl AIOContext {
-    fn new(maxevents: usize) -> Result<Self, Error> {
+    fn new(maxevents: u32) -> Result<Self, Error> {
         let mut ctx = std::ptr::null_mut();
         unsafe {
             match abi::io_setup(maxevents as libc::c_int, &mut ctx) {
@@ -151,17 +151,6 @@ impl Drop for AIOFuture {
     fn drop(&mut self) {
         self.notifier.dropped(self.aio_id)
     }
-}
-
-pub trait AIOSchedulerIn {
-    fn schedule(&self, aio: AIO, notifier: &Arc<AIONotifier>) -> AIOFuture;
-    fn next_id(&self) -> u64;
-}
-
-pub trait AIOSchedulerOut {
-    fn get_receiver(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>>;
-    fn is_empty(&self) -> bool;
-    fn submit(&mut self, notifier: &AIONotifier) -> usize;
 }
 
 enum AIOState {
@@ -255,44 +244,83 @@ impl AIONotifier {
     }
 }
 
+pub struct AIOBuilder {
+    max_events: u32,
+    max_nwait: u16,
+    max_nbatched: usize,
+    timeout: Option<u32>,
+}
+
+impl Default for AIOBuilder {
+    fn default() -> Self {
+        AIOBuilder {
+            max_events: 128,
+            max_nwait: 128,
+            max_nbatched: 128,
+            timeout: None,
+        }
+    }
+}
+
+impl AIOBuilder {
+    pub fn max_events(&mut self, v: u32) -> &Self {
+        self.max_events = v;
+        self
+    }
+
+    pub fn max_nwait(&mut self, v: u16) -> &Self {
+        self.max_nwait = v;
+        self
+    }
+
+    pub fn timeout(&mut self, sec: u32) -> &Self {
+        self.timeout = Some(sec);
+        self
+    }
+
+    pub fn build(&mut self) -> Result<AIOManager, Error> {
+        let (scheduler_in, scheduler_out) = new_batch_scheduler(self.max_nbatched);
+        let (exit_s, exit_r) = crossbeam_channel::bounded(0);
+
+        let notifier = Arc::new(AIONotifier {
+            io_ctx: AIOContext::new(self.max_events)?,
+            waiting: Mutex::new(HashMap::new()),
+        });
+        let mut aiomgr = AIOManager {
+            notifier,
+            listener: None,
+            scheduler_in,
+            exit_s,
+        };
+        aiomgr.start(scheduler_out, exit_r, self.max_nwait, self.timeout)?;
+        Ok(aiomgr)
+    }
+}
+
 /// Manager all AIOs.
-pub struct AIOManager<S: AIOSchedulerIn> {
+pub struct AIOManager {
     notifier: Arc<AIONotifier>,
-    scheduler_in: S,
+    scheduler_in: AIOBatchSchedulerIn,
     listener: Option<std::thread::JoinHandle<()>>,
     exit_s: crossbeam_channel::Sender<()>,
 }
 
-impl<S: AIOSchedulerIn> AIOManager<S> {
-    pub fn new<T: AIOSchedulerOut + Send + 'static>(
-        scheduler: (S, T),
-        maxevents: usize,
-        max_nops: Option<u16>,
+impl AIOManager {
+    fn start(
+        &mut self,
+        mut scheduler_out: AIOBatchSchedulerOut,
+        exit_r: crossbeam_channel::Receiver<()>,
+        max_nwait: u16,
         timeout: Option<u32>,
-    ) -> Result<Self, Error> {
-        let (scheduler_in, mut scheduler_out) = scheduler;
-        let max_nops = max_nops.unwrap_or(4096);
-        let (exit_s, exit_r) = crossbeam_channel::bounded(0);
-
-        let notifier = Arc::new(AIONotifier {
-            io_ctx: AIOContext::new(maxevents)?,
-            waiting: Mutex::new(HashMap::new()),
-            //stopped: AtomicBool::new(false),
-        });
-
-        let n = notifier.clone();
-        let listener = Some(std::thread::spawn(move || {
-            let mut timespec = timeout
-                .and_then(|nsec: u32| {
-                    Some(libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: nsec as i64,
-                    })
-                })
-                .unwrap_or(libc::timespec {
-                    tv_sec: 0,
+    ) -> Result<(), Error> {
+        let n = self.notifier.clone();
+        self.listener = Some(std::thread::spawn(move || {
+            let mut timespec = timeout.and_then(|sec: u32| {
+                Some(libc::timespec {
+                    tv_sec: sec as i64,
                     tv_nsec: 0,
-                });
+                })
+            });
             let mut ongoing = 0;
             loop {
                 // try to quiesce
@@ -318,14 +346,17 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
                     continue;
                 }
                 // then block on any finishing aios
-                let mut events = vec![abi::IOEvent::default(); max_nops as usize];
+                let mut events = vec![abi::IOEvent::default(); max_nwait as usize];
                 let ret = unsafe {
                     abi::io_getevents(
                         *n.io_ctx,
                         1,
-                        max_nops as i64,
+                        max_nwait as i64,
                         events.as_mut_ptr(),
-                        &mut timespec as *mut libc::timespec,
+                        timespec
+                            .as_mut()
+                            .and_then(|t| Some(t as *mut libc::timespec))
+                            .unwrap_or(std::ptr::null_mut()),
                     )
                 };
                 // TODO: AIO fatal error handling
@@ -340,21 +371,10 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
                 }
             }
         }));
-        Ok(AIOManager {
-            notifier,
-            listener,
-            scheduler_in,
-            exit_s,
-        })
+        Ok(())
     }
 
-    pub fn read(
-        &self,
-        fd: RawFd,
-        offset: u64,
-        length: usize,
-        priority: Option<u16>,
-    ) -> AIOFuture {
+    pub fn read(&self, fd: RawFd, offset: u64, length: usize, priority: Option<u16>) -> AIOFuture {
         let priority = priority.unwrap_or(0);
         let mut data = Vec::new();
         data.resize(length, 0);
@@ -392,7 +412,7 @@ impl<S: AIOSchedulerIn> AIOManager<S> {
     }
 }
 
-impl<S: AIOSchedulerIn> Drop for AIOManager<S> {
+impl Drop for AIOManager {
     fn drop(&mut self) {
         self.exit_s.send(()).unwrap();
         self.listener.take().unwrap().join().unwrap();
@@ -410,7 +430,7 @@ pub struct AIOBatchSchedulerOut {
     leftover: Vec<AtomicPtr<abi::IOCb>>,
 }
 
-impl AIOSchedulerIn for AIOBatchSchedulerIn {
+impl AIOBatchSchedulerIn {
     fn schedule(&self, aio: AIO, notifier: &Arc<AIONotifier>) -> AIOFuture {
         let fut = AIOFuture {
             notifier: notifier.clone(),
@@ -429,7 +449,7 @@ impl AIOSchedulerIn for AIOBatchSchedulerIn {
     }
 }
 
-impl AIOSchedulerOut for AIOBatchSchedulerOut {
+impl AIOBatchSchedulerOut {
     fn get_receiver(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>> {
         &self.queue_out
     }
@@ -476,10 +496,7 @@ impl AIOSchedulerOut for AIOBatchSchedulerOut {
 }
 
 /// Create the scheduler that submits AIOs in batches.
-pub fn new_batch_scheduler(
-    max_nbatched: Option<usize>,
-) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
-    let max_nbatched = max_nbatched.unwrap_or(128);
+fn new_batch_scheduler(max_nbatched: usize) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
     let (queue_in, queue_out) = crossbeam_channel::unbounded();
     let bin = AIOBatchSchedulerIn {
         queue_in,
