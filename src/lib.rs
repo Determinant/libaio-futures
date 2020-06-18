@@ -263,21 +263,32 @@ impl Default for AIOBuilder {
 }
 
 impl AIOBuilder {
+    /// Maximum concurrent async IO operations.
     pub fn max_events(&mut self, v: u32) -> &Self {
         self.max_events = v;
         self
     }
 
+    /// Maximum complete IOs per poll.
     pub fn max_nwait(&mut self, v: u16) -> &Self {
         self.max_nwait = v;
         self
     }
 
+    /// Maximum number of IOs per submission.
+    pub fn max_nbatched(&mut self, v: usize) -> &Self {
+        self.max_nbatched = v;
+        self
+    }
+
+    /// Timeout for a polling iteration (default is None).
     pub fn timeout(&mut self, sec: u32) -> &Self {
         self.timeout = Some(sec);
         self
     }
 
+    /// Build an AIOManager object based on the configuration (and auto-start the background IO
+    /// scheduling thread).
     pub fn build(&mut self) -> Result<AIOManager, Error> {
         let (scheduler_in, scheduler_out) = new_batch_scheduler(self.max_nbatched);
         let (exit_s, exit_r) = crossbeam_channel::bounded(0);
