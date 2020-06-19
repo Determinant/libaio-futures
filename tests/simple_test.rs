@@ -23,7 +23,7 @@ fn simple1() {
     let spawner = pool.spawner();
     for w in ws.into_iter() {
         let h = spawner.spawn_local_with_handle(w).unwrap().map(|r| {
-            println!("wrote {} bytes", r.unwrap().0);
+            println!("wrote {} bytes", r.0.unwrap());
         });
         spawner.spawn_local(h).unwrap();
     }
@@ -55,7 +55,7 @@ fn simple2() {
     let spawner = pool.spawner();
     for w in ws.into_iter() {
         let h = spawner.spawn_local_with_handle(w).unwrap().map(|r| {
-            println!("wrote {} bytes", r.unwrap().0);
+            println!("wrote {} bytes", r.0.unwrap());
         });
         spawner.spawn_local(h).unwrap();
     }

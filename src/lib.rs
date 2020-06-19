@@ -27,7 +27,7 @@
 //! let spawner = pool.spawner();
 //! for w in ws.into_iter() {
 //!     let h = spawner.spawn_local_with_handle(w).unwrap().map(|r| {
-//!         println!("wrote {} bytes", r.unwrap().0);
+//!         println!("wrote {} bytes", r.0.unwrap());
 //!     });
 //!     spawner.spawn_local(h).unwrap();
 //! }
@@ -127,7 +127,7 @@ impl Drop for AIO {
 
 /// The result of an AIO operation: the number of bytes written on success,
 /// or the errno on failure.
-pub type AIOResult = Result<(usize, Box<[u8]>), i32>;
+pub type AIOResult = (Result<usize, i32>, Box<[u8]>);
 
 /// Represents a scheduled (future) asynchronous I/O operation, which gets executed (resolved)
 /// automatically.
@@ -212,24 +212,26 @@ impl AIONotifier {
             hash_map::Entry::Occupied(e) => match e.remove() {
                 AIOState::FutureInit(mut aio, dropped) => {
                     if !dropped {
+                        let data = aio.data.take().unwrap();
                         w.insert(
                             id,
                             AIOState::FutureDone(if res >= 0 {
-                                Ok((res as usize, aio.data.take().unwrap()))
+                                (Ok(res as usize), data)
                             } else {
-                                Err(-res as i32)
+                                (Err(-res as i32), data)
                             }),
                         );
                     }
                 }
                 AIOState::FuturePending(mut aio, waker, dropped) => {
                     if !dropped {
+                        let data = aio.data.take().unwrap();
                         w.insert(
                             id,
                             AIOState::FutureDone(if res >= 0 {
-                                Ok((res as usize, aio.data.take().unwrap()))
+                                (Ok(res as usize), data)
                             } else {
-                                Err(-res as i32)
+                                (Err(-res as i32), data)
                             }),
                         );
                         waker.wake();
@@ -420,6 +422,18 @@ impl AIOManager {
             abi::IOCmd::PWrite,
         );
         self.scheduler_in.schedule(aio, &self.notifier)
+    }
+
+    /// Get a copy of the current data in the buffer.
+    pub fn copy_data(&self, fut: &AIOFuture) -> Option<Vec<u8>> {
+        let w = self.notifier.waiting.lock();
+        w.get(&fut.aio_id).and_then(|state| {
+            Some(match state {
+                AIOState::FutureInit(aio, _) => &**aio.data.as_ref().unwrap(),
+                AIOState::FuturePending(aio, _, _) => &**aio.data.as_ref().unwrap(),
+                AIOState::FutureDone(res) => &res.1
+            }.to_vec())
+        })
     }
 }
 
