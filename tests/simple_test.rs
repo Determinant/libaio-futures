@@ -6,7 +6,7 @@ use std::os::unix::io::AsRawFd;
 
 #[test]
 fn simple1() {
-    let aiomgr = AIOBuilder::default().build().unwrap();
+    let aiomgr = AIOBuilder::default().max_events(100).build().unwrap();
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)

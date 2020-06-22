@@ -40,7 +40,7 @@ use std::collections::{hash_map, HashMap};
 use std::os::unix::io::RawFd;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicPtr, Ordering},
+    atomic::{AtomicPtr, AtomicUsize, Ordering},
     Arc,
 };
 
@@ -136,6 +136,12 @@ pub struct AIOFuture {
     aio_id: u64,
 }
 
+impl AIOFuture {
+    pub fn get_id(&self) -> u64 {
+        self.aio_id
+    }
+}
+
 impl std::future::Future for AIOFuture {
     type Output = AIOResult;
     fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> std::task::Poll<Self::Output> {
@@ -162,6 +168,7 @@ enum AIOState {
 /// The state machine for finished AIO operations and wakes up the futures.
 pub struct AIONotifier {
     waiting: Mutex<HashMap<u64, AIOState>>,
+    npending: AtomicUsize,
     io_ctx: AIOContext,
 }
 
@@ -208,6 +215,7 @@ impl AIONotifier {
 
     fn finish(&self, id: u64, res: i64) {
         let mut w = self.waiting.lock();
+        self.npending.fetch_sub(1, Ordering::Relaxed);
         match w.entry(id) {
             hash_map::Entry::Occupied(e) => match e.remove() {
                 AIOState::FutureInit(mut aio, dropped) => {
@@ -266,25 +274,25 @@ impl Default for AIOBuilder {
 
 impl AIOBuilder {
     /// Maximum concurrent async IO operations.
-    pub fn max_events(&mut self, v: u32) -> &Self {
+    pub fn max_events(&mut self, v: u32) -> &mut Self {
         self.max_events = v;
         self
     }
 
     /// Maximum complete IOs per poll.
-    pub fn max_nwait(&mut self, v: u16) -> &Self {
+    pub fn max_nwait(&mut self, v: u16) -> &mut Self {
         self.max_nwait = v;
         self
     }
 
     /// Maximum number of IOs per submission.
-    pub fn max_nbatched(&mut self, v: usize) -> &Self {
+    pub fn max_nbatched(&mut self, v: usize) -> &mut Self {
         self.max_nbatched = v;
         self
     }
 
     /// Timeout for a polling iteration (default is None).
-    pub fn timeout(&mut self, sec: u32) -> &Self {
+    pub fn timeout(&mut self, sec: u32) -> &mut Self {
         self.timeout = Some(sec);
         self
     }
@@ -298,6 +306,7 @@ impl AIOBuilder {
         let notifier = Arc::new(AIONotifier {
             io_ctx: AIOContext::new(self.max_events)?,
             waiting: Mutex::new(HashMap::new()),
+            npending: AtomicUsize::new(0),
         });
         let mut aiomgr = AIOManager {
             notifier,
@@ -425,15 +434,23 @@ impl AIOManager {
     }
 
     /// Get a copy of the current data in the buffer.
-    pub fn copy_data(&self, fut: &AIOFuture) -> Option<Vec<u8>> {
+    pub fn copy_data(&self, aio_id: u64) -> Option<Vec<u8>> {
         let w = self.notifier.waiting.lock();
-        w.get(&fut.aio_id).and_then(|state| {
-            Some(match state {
-                AIOState::FutureInit(aio, _) => &**aio.data.as_ref().unwrap(),
-                AIOState::FuturePending(aio, _, _) => &**aio.data.as_ref().unwrap(),
-                AIOState::FutureDone(res) => &res.1
-            }.to_vec())
+        w.get(&aio_id).and_then(|state| {
+            Some(
+                match state {
+                    AIOState::FutureInit(aio, _) => &**aio.data.as_ref().unwrap(),
+                    AIOState::FuturePending(aio, _, _) => &**aio.data.as_ref().unwrap(),
+                    AIOState::FutureDone(res) => &res.1,
+                }
+                .to_vec(),
+            )
         })
+    }
+
+    /// Get the number of pending AIOs (approximation).
+    pub fn get_npending(&self) -> usize {
+        self.notifier.npending.load(Ordering::Relaxed)
     }
 }
 
@@ -464,6 +481,7 @@ impl AIOBatchSchedulerIn {
         let iocb = aio.iocb.load(Ordering::Acquire);
         notifier.register_notify(aio.id, AIOState::FutureInit(aio, false));
         self.queue_in.send(AtomicPtr::new(iocb)).unwrap();
+        notifier.npending.fetch_add(1, Ordering::Relaxed);
         fut
     }
 
