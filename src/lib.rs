@@ -84,6 +84,14 @@ impl AIOContext {
     }
 }
 
+impl Drop for AIOContext {
+    fn drop(&mut self) {
+        unsafe {
+            assert_eq!(abi::io_destroy(self.0), 0);
+        }
+    }
+}
+
 /// Represent the necessary data for an AIO operation. Memory-safe when moved.
 pub struct AIO {
     // hold the buffer used by iocb
