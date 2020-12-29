@@ -1,7 +1,7 @@
 use futures::executor::LocalPool;
 use futures::future::FutureExt;
 use futures::task::LocalSpawnExt;
-use libaiofut::AIOBuilder;
+use aiofut::AIOBuilder;
 use std::os::unix::io::AsRawFd;
 
 #[test]
