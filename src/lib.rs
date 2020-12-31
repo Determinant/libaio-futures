@@ -182,7 +182,7 @@ pub struct AIONotifier {
     npending: AtomicUsize,
     io_ctx: AIOContext,
     #[cfg(feature = "emulated-failure")]
-    emul_fail: Option<Arc<Mutex<EmulatedFailure>>>,
+    emul_fail: Option<EmulatedFailureShared>,
 }
 
 impl AIONotifier {
@@ -279,7 +279,7 @@ pub struct AIOBuilder {
     max_nbatched: usize,
     timeout: Option<u32>,
     #[cfg(feature = "emulated-failure")]
-    emul_fail: Option<Arc<Mutex<EmulatedFailure>>>,
+    emul_fail: Option<EmulatedFailureShared>,
 }
 
 impl Default for AIOBuilder {
@@ -321,10 +321,7 @@ impl AIOBuilder {
     }
 
     #[cfg(feature = "emulated-failure")]
-    pub fn emulated_failure(
-        &mut self,
-        ef: Arc<Mutex<EmulatedFailure>>,
-    ) -> &mut Self {
+    pub fn emulated_failure(&mut self, ef: EmulatedFailureShared) -> &mut Self {
         self.emul_fail = Some(ef);
         self
     }
@@ -354,11 +351,11 @@ impl AIOBuilder {
     }
 }
 
-#[cfg(feature = "emulated-failure")]
-pub struct EmulatedFailure {
-    pub fails: Vec<(usize, i32)>,
-    pub op_cnt: usize,
+pub trait EmulatedFailure: Send {
+    fn tick(&mut self) -> Option<i64>;
 }
+
+pub type EmulatedFailureShared = Arc<Mutex<dyn EmulatedFailure>>;
 
 /// Manager all AIOs.
 pub struct AIOManager {
@@ -438,12 +435,8 @@ impl AIOManager {
                         let mut res = ev.res;
                         if let Some(emul_fail) = n.emul_fail.as_ref() {
                             let mut ef = emul_fail.lock();
-                            ef.op_cnt += 1;
-                            if let Some((t, e)) = ef.fails.last() {
-                                if ef.op_cnt == *t {
-                                    res = *e as i64;
-                                    ef.fails.pop().unwrap();
-                                }
+                            if let Some(e) = ef.tick() {
+                                res = e
                             }
                         }
                         n.finish(ev.data as u64, res);
