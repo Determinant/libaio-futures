@@ -79,7 +79,7 @@ pub struct IOVector {
     pub iov_len: size_t,
 }
 
-#[link(name = "aio")]
+#[link(name = "aio", kind = "static")]
 extern "C" {
     pub fn io_queue_init(maxevents: c_int, ctxp: *mut IOContextPtr) -> c_int;
     pub fn io_queue_release(ctx: IOContextPtr) -> c_int;
