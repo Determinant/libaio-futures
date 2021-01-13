@@ -25,11 +25,11 @@
 
 io_syscall5(int, __io_getevents_0_4, io_getevents, io_context_t, ctx, long, min_nr, long, nr, struct io_event *, events, struct timespec *, timeout)
 
-int io_getevents_0_4(io_context_t ctx, long min_nr, long nr, struct io_event * events, struct timespec * timeout)
+int io_getevents(io_context_t ctx, long min_nr, long nr, struct io_event * events, struct timespec * timeout)
 {
 	if (aio_ring_is_empty(ctx, timeout))
 		return 0;
 	return __io_getevents_0_4(ctx, min_nr, nr, events, timeout);
 }
 
-DEFSYMVER(io_getevents_0_4, io_getevents, 0.4)
+//DEFSYMVER(io_getevents_0_4, io_getevents, 0.4)
