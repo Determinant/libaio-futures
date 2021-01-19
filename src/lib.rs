@@ -79,7 +79,7 @@ impl AIOContext {
                 LIBAIO_ENOSYS => Err(Error::NotSupported),
                 _ => Err(Error::OtherError),
             }
-            .and(Ok(AIOContext(ctx)))
+            .and_then(|_| Ok(AIOContext(ctx)))
         }
     }
 }
