@@ -39,6 +39,8 @@ use parking_lot::Mutex;
 use std::collections::{hash_map, HashMap};
 use std::os::unix::io::RawFd;
 use std::pin::Pin;
+use std::os::raw::c_long;
+use libc::time_t;
 use std::sync::{
     atomic::{AtomicPtr, AtomicUsize, Ordering},
     Arc,
@@ -377,7 +379,7 @@ impl AIOManager {
         self.listener = Some(std::thread::spawn(move || {
             let mut timespec = timeout.and_then(|sec: u32| {
                 Some(libc::timespec {
-                    tv_sec: sec as i64,
+                    tv_sec: sec as time_t,
                     tv_nsec: 0,
                 })
             });
@@ -412,7 +414,7 @@ impl AIOManager {
                     abi::io_getevents(
                         *n.io_ctx,
                         1,
-                        max_nwait as i64,
+                        max_nwait as c_long,
                         events.as_mut_ptr(),
                         timespec
                             .as_mut()
@@ -585,7 +587,7 @@ impl AIOBatchSchedulerOut {
         let mut ret = unsafe {
             abi::io_submit(
                 *notifier.io_ctx,
-                pending.len() as i64,
+                pending.len() as c_long,
                 (&mut pending).as_mut_ptr(),
             )
         };
