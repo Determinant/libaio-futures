@@ -35,12 +35,12 @@
 //! ```
 
 mod abi;
+use libc::time_t;
 use parking_lot::Mutex;
 use std::collections::{hash_map, HashMap};
+use std::os::raw::c_long;
 use std::os::unix::io::RawFd;
 use std::pin::Pin;
-use std::os::raw::c_long;
-use libc::time_t;
 use std::sync::{
     atomic::{AtomicPtr, AtomicUsize, Ordering},
     Arc,
@@ -154,10 +154,7 @@ impl AIOFuture {
 
 impl std::future::Future for AIOFuture {
     type Output = AIOResult;
-    fn poll(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context,
-    ) -> std::task::Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context) -> std::task::Poll<Self::Output> {
         if let Some(ret) = self.notifier.poll(self.aio_id, cx.waker()) {
             std::task::Poll::Ready(ret)
         } else {
@@ -214,17 +211,11 @@ impl AIONotifier {
                 let v = e.remove();
                 match v {
                     AIOState::FutureInit(aio, _) => {
-                        waiting.insert(
-                            id,
-                            AIOState::FuturePending(aio, waker.clone(), false),
-                        );
+                        waiting.insert(id, AIOState::FuturePending(aio, waker.clone(), false));
                         None
                     }
                     AIOState::FuturePending(aio, waker, dropped) => {
-                        waiting.insert(
-                            id,
-                            AIOState::FuturePending(aio, waker, dropped),
-                        );
+                        waiting.insert(id, AIOState::FuturePending(aio, waker, dropped));
                         None
                     }
                     AIOState::FutureDone(res) => Some(res),
@@ -331,8 +322,7 @@ impl AIOBuilder {
     /// Build an AIOManager object based on the configuration (and auto-start the background IO
     /// scheduling thread).
     pub fn build(&mut self) -> Result<AIOManager, Error> {
-        let (scheduler_in, scheduler_out) =
-            new_batch_scheduler(self.max_nbatched);
+        let (scheduler_in, scheduler_out) = new_batch_scheduler(self.max_nbatched);
         let (exit_s, exit_r) = crossbeam_channel::bounded(0);
 
         let notifier = Arc::new(AIONotifier {
@@ -392,7 +382,7 @@ impl AIOManager {
                     sel.recv(&scheduler_out.get_receiver());
                     if sel.ready() == 0 {
                         exit_r.recv().unwrap();
-                        break
+                        break;
                     }
                 }
                 // submit as many aios as possible
@@ -400,16 +390,15 @@ impl AIOManager {
                     let nacc = scheduler_out.submit(&n);
                     ongoing += nacc;
                     if nacc == 0 {
-                        break
+                        break;
                     }
                 }
                 // no need to wait if there is no progress
                 if ongoing == 0 {
-                    continue
+                    continue;
                 }
                 // then block on any finishing aios
-                let mut events =
-                    vec![abi::IOEvent::default(); max_nwait as usize];
+                let mut events = vec![abi::IOEvent::default(); max_nwait as usize];
                 let ret = unsafe {
                     abi::io_getevents(
                         *n.io_ctx,
@@ -425,7 +414,7 @@ impl AIOManager {
                 // TODO: AIO fatal error handling
                 // avoid empty slice
                 if ret == 0 {
-                    continue
+                    continue;
                 }
                 assert!(ret > 0);
                 ongoing -= ret as usize;
@@ -449,13 +438,7 @@ impl AIOManager {
         Ok(())
     }
 
-    pub fn read(
-        &self,
-        fd: RawFd,
-        offset: u64,
-        length: usize,
-        priority: Option<u16>,
-    ) -> AIOFuture {
+    pub fn read(&self, fd: RawFd, offset: u64, length: usize, priority: Option<u16>) -> AIOFuture {
         let priority = priority.unwrap_or(0);
         let mut data = Vec::new();
         data.resize(length, 0);
@@ -498,12 +481,8 @@ impl AIOManager {
         w.get(&aio_id).and_then(|state| {
             Some(
                 match state {
-                    AIOState::FutureInit(aio, _) => {
-                        &**aio.data.as_ref().unwrap()
-                    }
-                    AIOState::FuturePending(aio, _, _) => {
-                        &**aio.data.as_ref().unwrap()
-                    }
+                    AIOState::FutureInit(aio, _) => &**aio.data.as_ref().unwrap(),
+                    AIOState::FuturePending(aio, _, _) => &**aio.data.as_ref().unwrap(),
                     AIOState::FutureDone(res) => &res.1,
                 }
                 .to_vec(),
@@ -556,9 +535,7 @@ impl AIOBatchSchedulerIn {
 }
 
 impl AIOBatchSchedulerOut {
-    fn get_receiver(
-        &self,
-    ) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>> {
+    fn get_receiver(&self) -> &crossbeam_channel::Receiver<AtomicPtr<abi::IOCb>> {
         &self.queue_out
     }
     fn is_empty(&self) -> bool {
@@ -577,12 +554,12 @@ impl AIOBatchSchedulerOut {
                 pending.push(iocb.load(Ordering::Acquire));
                 quota -= 1;
                 if quota == 0 {
-                    break
+                    break;
                 }
             }
         }
         if pending.len() == 0 {
-            return 0
+            return 0;
         }
         let mut ret = unsafe {
             abi::io_submit(
@@ -604,9 +581,7 @@ impl AIOBatchSchedulerOut {
 }
 
 /// Create the scheduler that submits AIOs in batches.
-fn new_batch_scheduler(
-    max_nbatched: usize,
-) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
+fn new_batch_scheduler(max_nbatched: usize) -> (AIOBatchSchedulerIn, AIOBatchSchedulerOut) {
     let (queue_in, queue_out) = crossbeam_channel::unbounded();
     let bin = AIOBatchSchedulerIn {
         queue_in,
