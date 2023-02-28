@@ -2,10 +2,10 @@
 // https://raw.githubusercontent.com/jsgf/libaio-rust/master/src/aioabi.rs
 #![allow(dead_code)]
 
-use libc::{c_long, c_int, size_t};
 pub use libc::timespec;
-use std::mem::zeroed;
+use libc::{c_int, c_long, size_t};
 use std::default::Default;
+use std::mem::zeroed;
 
 #[repr(C)]
 pub enum IOCmd {
@@ -20,14 +20,14 @@ pub enum IOCmd {
     PWriteV = 8,
 }
 
-pub const IOCB_FLAG_RESFD : u32 = 1 << 0;
+pub const IOCB_FLAG_RESFD: u32 = 1 << 0;
 pub const IOCB_FLAG_IOPRIO: u32 = 1 << 1;
 
 // Taken from linux/include/linux/aio_abi.h
 // This is a kernel ABI, so there should be no need to worry about it changing.
 #[repr(C)]
 pub struct IOCb {
-    pub aio_data: u64,             // ends up in io_event.data
+    pub aio_data: u64, // ends up in io_event.data
     // NOTE: the order of aio_key and aio_rw_flags could be byte-order depedent
     pub aio_key: u32,
     pub aio_rw_flags: u32,
@@ -50,7 +50,7 @@ impl Default for IOCb {
         IOCb {
             aio_lio_opcode: IOCmd::Noop as u16,
             aio_fildes: (-1_i32) as u32,
-            .. unsafe { zeroed() }
+            ..unsafe { zeroed() }
         }
     }
 }
@@ -88,9 +88,13 @@ extern "C" {
     pub fn io_destroy(ctx: IOContextPtr) -> c_int;
     pub fn io_submit(ctx: IOContextPtr, nr: c_long, ios: *mut *mut IOCb) -> c_int;
     pub fn io_cancel(ctx: IOContextPtr, iocb: *mut IOCb, evt: *mut IOEvent) -> c_int;
-    pub fn io_getevents(ctx_id: IOContextPtr, min_nr: c_long,
-                        nr: c_long, events: *mut IOEvent,
-                        timeout: *mut timespec) -> c_int;
+    pub fn io_getevents(
+        ctx_id: IOContextPtr,
+        min_nr: c_long,
+        nr: c_long,
+        events: *mut IOEvent,
+        timeout: *mut timespec,
+    ) -> c_int;
     pub fn io_set_eventfd(iocb: *mut IOCb, eventfd: c_int);
 }
 
